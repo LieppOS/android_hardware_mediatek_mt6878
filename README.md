@@ -1,32 +1,78 @@
-# MT6878 Android hardware source — C51
+# MT6878 Android hardware source — C51B
 
-Canonical owner: `LieppOS/android_hardware_mediatek_mt6878`.
+Canonical owner: `LieppOS/android_hardware_mediatek_mt6878`. Continues C51
+`d8a26a85b00a5db382185150b2be148d8bade307`, not another HAL service or source copy.
+Native code is **INDEPENDENT**, LieppOS Contributors, Apache-2.0 (`LICENSE`).
+No proprietary userspace library, firmware or calibration payload was imported.
 
-`libmtk_regulator_vibrator` is an independently authored Apache-2.0 native backend for the actual MediaTek regulator-vibrator LED-class interface. It is used by the single GQ5012BF1 AIDL adapter in `hardware/ulefone/gq5012bf1/vibrator/`; it is not another HAL service.
+## Two deliberately distinct paths
 
-## Verified contract, not guessed paths
+- `discoverRegulatorLed`: original boolean brightness backend, retained for
+  diagnostics/regression tests only. A userspace timer cannot survive process
+  death. **Not used by the production entrypoint.**
+- `discoverTimedRegulatorLed`: exact same driver-identity discovery plus a required
+  Linux LED `oneshot` trigger. It **never falls back** to indefinite brightness-on.
+  Source: `vibrator/OneShot.cpp`; complete lower-layer evidence/failure model and
+  kernel-owner proposal: [`vibrator/SAFETY.md`](vibrator/SAFETY.md).
 
-Read-only evidence in the existing kernel tree (`kernel/ulefone/gq5012bf1/`):
+Driver `regulator_vibrator` is verified in the authorized kernel source
+`drivers/leds/regulator-vibrator.c` (SHA-256
+`d6cec1e2d6a04d1fd31f8a128ec365999ac1382539395b53d9873a4c85a5ff44`).
+LED label comes from DT. Discovery accepts exactly one matching device, verifies
+numeric max_brightness, pins its directory fd, permits normal kernel class links,
+and refuses attribute symlinks/nonregular nodes. Unexpected discovery read/open
+errors are propagated rather than hiding an unreadable second candidate.
+No label, voltage, calibration path, ioctl or PMIC watchdog is guessed.
 
-- `drivers/leds/regulator-vibrator.c`, byte SHA-256 `d6cec1e2d6a04d1fd31f8a128ec365999ac1382539395b53d9873a4c85a5ff44`.
-- Lines 19, 163–173, 176–177, 231–240: platform driver name `regulator_vibrator`, nonzero/zero LED brightness queues on/off, LED name comes from the DT `label`, LED class registration uses the platform device parent.
-- The documented C46 `slotb-dmesg.txt` (SHA-256 `8994a8516f527dd90215452f4354ddbe54d1faee18e4963f13e93f64a9732c81`) records driver enable/disable at lines 170/191. This is historical driver evidence, **not verification of this new HAL**.
+The timed protocol serializes: brightness=0 (cancel old trigger), trigger=oneshot,
+verify `[oneshot]`, invert=0, delay_on=requested milliseconds, delay_off=1,
+shot=1 **last**. delay_off=0 would mean indefinite ON in this kernel and is never
+used. Repeated requests cancel before rearming; a pending kernel shot otherwise
+ignores replacement. Accepted shot expiry is kernel-owned, conditional on the
+verified running kernel/trigger and functioning scheduler/workqueue/regulator.
+Success means a complete attribute transaction was accepted, not motion feedback.
 
-The backend enumerates the Linux `/sys/class/leds` ABI and accepts exactly one entry whose `device/driver` symlink names `regulator_vibrator`. It verifies numeric `max_brightness >= 1`, then writes only `1\n` or `0\n` to `brightness`. No DT LED label, voltage, calibration, timed_output path or ioctl is invented. Class/device symlinks are expected sysfs ABI; final attribute symlinks are rejected. The board service fixes the root; Binder clients cannot supply paths.
+## Corrections and safety limits
 
-The driver queues work and does not propagate regulator operation failures through brightness writes. Therefore success means **the kernel accepted the complete attribute write**, not measured motor motion. Missing/ambiguous devices, invalid attributes, permissions and write errors fail explicitly. Partial sysfs writes are errors, never continued as a second command.
+Controller requests are mutex-serialized. Nonpositive duration is EINVAL; the
+positive signed-32-bit API range is finite (max 2147483647 ms), **not a claimed
+safe physical continuous-vibration limit**. Failed activation arms an immediate
+OFF instead of retaining a distant deadline. Failed OFF without a prior deadline
+now arms retry. Any I/O failure latches re-enable until an explicit successful OFF;
+timer cleanup success alone does not acknowledge/release the fault. Retries are
+250 ms apart; null partial initialization returns ENODEV. Shutdown joins its worker
+and attempts OFF. These are best-effort behaviors, not SIGKILL safety.
 
-## Timing and safety
+A successful kernel shot has no competing normal userspace deadline: kernel
+activation starts on a later tick, so an earlier user timer could shorten the
+pulse. The legacy diagnostic path retains its original user deadline.
 
-A monotonic condition-variable worker serializes on/off and timer replacement. Nonpositive durations are rejected before I/O. Failed enables arm a safety stop if needed. Failed explicit/timer stops do not silently disarm an existing deadline; timer stop errors are reported and retried every 250 ms. Shutdown joins the worker and attempts off. No callback/amplitude/effect capability is inferred.
+**Deployment CLOSED:** inspected GKI defconfig does not select ONESHOT; loaded
+trigger/config, actual node labels/permissions and physical behavior are unknown.
+The review-only `vibrator/oneshot-config-proposal.patch` selects existing kernel
+code, not a new driver ABI; fixture-only dry-run passes. Kernel owner must also
+resolve/review driver workqueue probe unwind, remove/unbind, notifier, suspend and
+shutdown lifetime races described in SAFETY.md. No kernel worktree was changed.
 
-**Deployment blocker:** the verified driver has no kernel timeout in this interface. Process death can leave the actuator enabled until the source service restarts and successfully performs its mandatory initial off, or its kernel suspend/shutdown handlers attempt off. A service restart is not a guaranteed physical timeout. Do not activate without owner-approved crash/restart and power-safety validation or an existing verified kernel fail-safe. No kernel change is made here. Native tests cannot establish this hardware property.
+## Tests and build evidence
 
-## Builds/tests and dependencies
+- Original `vibrator/tests/ControllerTest.cpp`: **12/12** normally and ASan/UBSan.
+  Existing error expectations remain; explicit caller fault injection is now
+  deterministic against the new immediate safety worker.
+- Board-owned `hardware/ulefone/gq5012bf1/vibrator/tests/LifecycleTest.cpp`:
+  **17/17** normally, ASan/UBSan and TSan. Uses the actual controller/request
+  policy with clearly fake sysfs attributes, including concurrency, every timed
+  transaction failure, cancellation, fault recovery, partial initialization and
+  SIGTERM/SIGKILL/SIGABRT child-process simulations of the **legacy limitation**.
+- Existing audit runner: **94/94 Python checks**, original 90 preserved.
+- Genuine platform SDK37 aidl generated frozen V2 headers; Android Clang22/Bionic
+  compiled all five backend/adapter/main sources to **arm64 objects** with vendor
+  and VNDK macros, no exceptions/RTTI, C++17 and Werror. **Not linked or Soong-built.**
+- Targeted Soong invocation reached bootstrap but failed on missing
+  `build/soong/config/main.star`; DeepSeek C53 owns recovery. No shared output was
+  reused or platform source modified. Compiler/test outputs are removed from the
+  audit runner's existing ignored `.tmp/`.
 
-- Soong definition: root `Android.bp`, C++17 static library; no proprietary userspace library.
-- Host behavior suite: `vibrator/tests/ControllerTest.cpp`, 12 substantive cases, compiled/run natively and with AddressSanitizer + UndefinedBehaviorSanitizer by the opt-in C51 tests in `tools/ulefone/gq5012bf1/hal-audit/tests/test_c51_source.py`.
-- Native compiler: GCC 16.2.1, Linux x86_64; flags `-std=c++17 -pthread -Wall -Wextra -Werror -O1 -g`, plus sanitizer flags for the second run. Temporary outputs are owned by the audit test runner and removed.
-- No full Android/Soong build was possible in the canonical partial checkout. This is not a Binder/VTS or hardware build result.
-
-Origin: **INDEPENDENT**, LieppOS Contributors, Apache-2.0 (`LICENSE`). No kernel implementation bodies, proprietary executable contents, firmware or calibration data were imported. Kernel/hardware support remains outside the scope of this userspace source availability claim.
+Native tests never access real `/sys`; mocks do not prove kernel or hardware
+expiry. Whole kernel/PMIC/firmware support and physical safety are not certified
+open or functional by this userspace source claim. No push or phone operation.

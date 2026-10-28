@@ -21,6 +21,7 @@ struct State {
     std::vector<bool> accepted;
     int failOn = 0;
     int failOff = 0;
+    std::thread::id failOffCaller{};
     int errors = 0;
     bool waitForOff() {
         std::unique_lock lock(mutex);
@@ -34,7 +35,10 @@ struct MemorySwitch final : Switch {
     int set(bool value) override {
         std::lock_guard lock(s->mutex);
         int& failures = value ? s->failOn : s->failOff;
-        if (failures) { --failures; return EACCES; }
+        if (failures && (value || s->failOffCaller == std::thread::id{} ||
+                         s->failOffCaller == std::this_thread::get_id())) {
+            --failures; return EACCES;
+        }
         s->accepted.push_back(value);
         s->changed.notify_all();
         return 0;
@@ -85,7 +89,11 @@ int main(int argc, char** argv) {
         test("write errors propagate and an existing stop remains armed", [&] {
             auto s = std::make_shared<State>(); Controller c(memory(s));
             CHECK(c.on(20) == 0);
-            { std::lock_guard lock(s->mutex); s->failOn = 1; s->failOff = 1; }
+            { std::lock_guard lock(s->mutex);
+              s->failOn = 1; s->failOff = 1;
+              // The new immediate safety worker must not consume the explicit
+              // caller's injected error nondeterministically.
+              s->failOffCaller = std::this_thread::get_id(); }
             CHECK(c.on(2000) == EACCES); CHECK(c.off() == EACCES); CHECK(s->waitForOff());
             auto firstFailure = std::make_shared<State>(); firstFailure->failOn = 1;
             Controller safe(memory(firstFailure));

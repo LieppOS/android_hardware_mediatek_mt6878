@@ -30,22 +30,41 @@ struct CloseDirectory {
     void operator()(DIR* directory) const { closedir(directory); }
 };
 
-class LedSwitch final : public Switch {
+class LedSwitch final : public Switch, public LedAttributes {
   public:
     explicit LedSwitch(int directory) : directory_(directory) {}
-    int set(bool enabled) override {
-        Fd file(openat(directory_.get(), "brightness", O_WRONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+    int set(bool enabled) override { return write("brightness", enabled ? "1\n" : "0\n"); }
+    int write(const char* name, const std::string& value) override {
+        Fd file(openat(directory_.get(), name, O_WRONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
         if (file.get() < 0) return errno;
         struct stat st {};
         if (fstat(file.get(), &st) < 0) return errno;
         if (!S_ISREG(st.st_mode)) return EINVAL;
-        const char* value = enabled ? "1\n" : "0\n";
         ssize_t written;
-        do { written = write(file.get(), value, 2); } while (written < 0 && errno == EINTR);
+        do { written = ::write(file.get(), value.data(), value.size()); } while (written < 0 && errno == EINTR);
         if (written < 0) return errno;
         // Sysfs store() expects one entire attribute transaction. Never append a
         // second partial write (which could be interpreted as a new command).
-        return written == 2 ? 0 : EIO;
+        return static_cast<size_t>(written) == value.size() ? 0 : EIO;
+    }
+    int read(const char* name, std::string* value) override {
+        if (!value) return EINVAL;
+        Fd file(openat(directory_.get(), name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+        if (file.get() < 0) return errno;
+        struct stat st {};
+        if (fstat(file.get(), &st) < 0) return errno;
+        if (!S_ISREG(st.st_mode)) return EINVAL;
+        char buffer[4097];
+        size_t used = 0;
+        while (used < sizeof(buffer)) {
+            ssize_t count = ::read(file.get(), buffer + used, sizeof(buffer) - used);
+            if (count < 0) { if (errno == EINTR) continue; return errno; }
+            if (!count) break;
+            used += static_cast<size_t>(count);
+        }
+        if (used == sizeof(buffer)) return EOVERFLOW;
+        value->assign(buffer, used);
+        return 0;
     }
   private:
     Fd directory_;
@@ -79,13 +98,13 @@ int validMaximum(int directory) {
 }
 }  // namespace
 
-std::unique_ptr<Switch> discoverRegulatorLed(const std::string& root, int* error) {
+static std::unique_ptr<LedSwitch> discoverDevice(const std::string& root, int* error) {
     if (!error) return nullptr;
     *error = 0;
     DIR* entries = opendir(root.c_str());
     if (!entries) { *error = errno; return nullptr; }
     std::unique_ptr<DIR, CloseDirectory> directory(entries);
-    std::unique_ptr<Switch> selected;
+    std::unique_ptr<LedSwitch> selected;
     for (;;) {
         errno = 0;
         const auto* entry = readdir(entries);
@@ -95,10 +114,18 @@ std::unique_ptr<Switch> discoverRegulatorLed(const std::string& root, int* error
         // LED class entries intentionally link to real sysfs devices. Only the
         // fixed trusted class root is used by production; no Binder path input.
         Fd led(openat(dirfd(entries), name.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
-        if (led.get() < 0) continue;  // An unrelated/hot-removed LED is not ours.
+        if (led.get() < 0) {
+            if (errno == ENOENT || errno == ENODEV) continue;  // Hot removal.
+            *error = errno; return nullptr;  // Never hide an unreadable second candidate.
+        }
         char target[4096];
         const ssize_t count = readlinkat(led.get(), "device/driver", target, sizeof(target));
-        if (count <= 0 || count == static_cast<ssize_t>(sizeof(target))) continue;
+        if (count < 0) {
+            if (errno == ENOENT || errno == ENODEV || errno == EINVAL) continue;
+            *error = errno; return nullptr;
+        }
+        if (count == static_cast<ssize_t>(sizeof(target))) { *error = EOVERFLOW; return nullptr; }
+        if (count == 0) continue;
         std::string_view driver(target, static_cast<size_t>(count));
         driver = driver.substr(driver.find_last_of('/') + 1);
         if (driver != "regulator_vibrator") continue;
@@ -109,5 +136,15 @@ std::unique_ptr<Switch> discoverRegulatorLed(const std::string& root, int* error
     }
     if (!selected) *error = ENODEV;
     return selected;
+}
+
+std::unique_ptr<Switch> discoverRegulatorLed(const std::string& root, int* error) {
+    return discoverDevice(root, error);  // Legacy diagnostic path only.
+}
+
+std::unique_ptr<Switch> discoverTimedRegulatorLed(const std::string& root, int* error) {
+    auto attributes = discoverDevice(root, error);
+    if (!attributes) return nullptr;
+    return makeOneShotSwitch(std::move(attributes), error);
 }
 }  // namespace lieppos::vibrator

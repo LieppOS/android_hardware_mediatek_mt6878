@@ -18,32 +18,46 @@ Controller::~Controller() {
     worker_.join();
     // Best effort safety stop, including shutdown before the deadline. The board
     // service also fails startup if its initial off() write cannot be accepted.
-    const int error = device_->set(false);
+    const int error = device_ ? device_->set(false) : ENODEV;
     if (error && onAsyncError_) onAsyncError_(error);
 }
 
 int Controller::on(int timeoutMs) {
     if (timeoutMs <= 0) return EINVAL;
     std::lock_guard lock(mutex_);
-    const int error = device_->set(true);
+    if (!device_) return ENODEV;
+    if (fault_) return fault_;
+    const int error = device_->start(timeoutMs);
     if (error) {
-        // A partial/failed enable has uncertain physical state. Preserve an
-        // existing stop, or arm an immediate safety-off if there was none.
-        if (!deadline_) {
-            deadline_ = std::chrono::steady_clock::now();
-            changed_.notify_all();
-        }
+        // A failed transaction has uncertain state. Do not wait for a possibly
+        // very long previous deadline, and do not allow another enable yet.
+        fault_ = error;
+        deadline_ = std::chrono::steady_clock::now();
+        changed_.notify_all();
         return error;
     }
-    deadline_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+    if (device_->usesKernelTimerProtocol()) {
+        // Kernel one-shot starts on a later timer tick. A same-duration user
+        // deadline could cancel it early and shorten the requested pulse.
+        deadline_.reset();
+    } else {
+        deadline_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+    }
     changed_.notify_all();
     return 0;
 }
 
 int Controller::off() {
     std::lock_guard lock(mutex_);
+    if (!device_) return ENODEV;
     const int error = device_->set(false);
-    if (error) return error;  // Keep the safety worker armed for another attempt.
+    if (error) {
+        fault_ = error;
+        deadline_ = std::chrono::steady_clock::now();
+        changed_.notify_all();
+        return error;
+    }
+    fault_ = 0;
     deadline_.reset();
     changed_.notify_all();
     return 0;
@@ -66,6 +80,7 @@ void Controller::run() {
         } else {
             // A failed timer-off must not become fake success or silently disarm
             // the motor stop. Retry at a bounded rate; report outside the mutex.
+            fault_ = error;
             deadline_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
             lock.unlock();
             if (onAsyncError_) onAsyncError_(error);
