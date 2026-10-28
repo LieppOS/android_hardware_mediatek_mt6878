@@ -1,0 +1,24 @@
+// Copyright 2026 The LieppOS Contributors
+// SPDX-License-Identifier: Apache-2.0
+soong_namespace {}
+
+package {
+    default_applicable_licenses: ["lieppos_mtk_vibrator_license"],
+}
+
+license {
+    name: "lieppos_mtk_vibrator_license",
+    visibility: [":__subpackages__"],
+    license_kinds: ["SPDX-license-identifier-Apache-2.0"],
+    license_text: ["LICENSE"],
+}
+
+cc_library_static {
+    name: "libmtk_regulator_vibrator",
+    vendor: true,
+    srcs: ["vibrator/Controller.cpp", "vibrator/LedSwitch.cpp"],
+    export_include_dirs: ["vibrator/include"],
+    cpp_std: "c++17",
+    cflags: ["-Wall", "-Wextra", "-Werror"],
+    visibility: ["//hardware/ulefone/gq5012bf1:__subpackages__"],
+}
