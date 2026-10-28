@@ -153,4 +153,34 @@ std::unique_ptr<Switch> discoverDriverTimedRegulatorLed(const std::string& root,
     if (!attributes) return nullptr;
     return makeDriverTimedSwitch(std::move(attributes), error);
 }
+
+std::unique_ptr<Switch> openDriverTimedRegulatorLed(const std::string& device, const std::string& label,
+                                                    int* error) {
+    if (!error) return nullptr;
+    if (label.empty() || label == "." || label == ".." || label.find('/') != std::string::npos) {
+        *error = EINVAL;
+        return nullptr;
+    }
+    // O_PATH: path walk needs only directory search; no LED-class directory,
+    // sibling LED or sysfs_leds object is opened, read or listed.
+    Fd platform(open(device.c_str(), O_PATH | O_DIRECTORY | O_CLOEXEC));
+    if (platform.get() < 0) { *error = errno; return nullptr; }
+    char target[4096];
+    const ssize_t count = readlinkat(platform.get(), "driver", target, sizeof(target));
+    if (count < 0) {
+        // An existing but unbound device has no driver link: not our hardware yet.
+        *error = errno == ENOENT ? ENODEV : errno;
+        return nullptr;
+    }
+    if (count == static_cast<ssize_t>(sizeof(target))) { *error = EOVERFLOW; return nullptr; }
+    std::string_view driver(target, static_cast<size_t>(count));
+    driver = driver.substr(driver.find_last_of('/') + 1);
+    if (driver != "regulator_vibrator") { *error = ENODEV; return nullptr; }
+    Fd leds(openat(platform.get(), "leds", O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+    if (leds.get() < 0) { *error = errno; return nullptr; }
+    // O_NOFOLLOW + O_DIRECTORY: a symlinked LED entry fails with ENOTDIR.
+    Fd led(openat(leds.get(), label.c_str(), O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+    if (led.get() < 0) { *error = errno; return nullptr; }
+    return makeDriverTimedSwitch(std::make_unique<LedSwitch>(led.release()), error);
+}
 }  // namespace lieppos::vibrator

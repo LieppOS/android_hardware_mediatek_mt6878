@@ -66,20 +66,31 @@ behavior and the actual installed kernel remain unverified. Deployment CLOSED.
 
 ## HAL compatibility and permissions
 
-Production uses `discoverDriverTimedRegulatorLed` / DriverTimed.cpp only. Requires
-exact driver identity, timeout ABI1 and valid finite maximum; missing/unknown
-metadata fails startup with no brightness/one-shot fallback. One duration write
+C51D production uses `openDriverTimedRegulatorLed` / DriverTimed.cpp only. It
+opens the canonical platform device with O_PATH (no LED-class enumeration),
+requires its `driver` link to be regulator_vibrator, opens `leds/<label>` without
+following a symlink, then requires timeout ABI1 and a valid finite maximum;
+missing/unknown metadata fails startup with no brightness/one-shot fallback.
+The C51C `discoverDriverTimedRegulatorLed` enumerator opened every LED and
+failed closed on the first unreadable sibling: under enforcing narrow policy it
+would never start. It remains for diagnostics/tests only. One duration write
 arms the kernel; OFF writes duration_ms=0. Bounds propagate into both Controller
 and Binder argument validation. Legacy/one-shot paths remain diagnostics/tests.
 Capabilities remain zero; unsupported haptics are not advertised.
 
 C54 owner needs only stable metadata/last_error reads and duration_ms write for
 the system UID and hal_vibrator_default domain. No trigger/invert/delay/shot or
-brightness write permission is required by the production path. Actual DT label,
-real-device path, ownership and SELinux labels remain unknown; no guessed rules,
-root UID, DAC override or broad sysfs grant is added. Keep stock selected and the
-new module/fragment unselected; code+init gates remain closed. Resolve the stock
-IVibratorManager contract before replacing its whole fragment.
+brightness write permission is required by the production path. C51D evidence:
+live DT `/regulator-vibrator` label `vibrator`; live sysfs
+`/sys/devices/platform/regulator-vibrator/{driver,leds/vibrator}`; stock vendor
+genfscon labels exactly that LED path `sysfs_vibrator`. Platform `hal_vibrator`
+already has sysfs_vibrator file rw + dir search; every domain has sysfs dir search
+and symlink read. No new allow rule is needed. DAC is still missing: stock
+ueventd does not give system ownership of duration_ms (kernel mode 0644 root).
+No root UID, DAC override or broad sysfs grant is added. Keep stock selected and
+the new module/fragment unselected; code+init gates remain closed. Stock
+IVibratorManager result: see the board README (single-IVibrator replacement of
+the whole stock binary; framework falls back to one default vibrator).
 
 ## Actual validation (offline only)
 

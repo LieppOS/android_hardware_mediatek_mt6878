@@ -41,8 +41,14 @@ std::unique_ptr<Switch> makeDriverTimedSwitch(std::unique_ptr<LedAttributes> att
 std::unique_ptr<Switch> discoverRegulatorLed(const std::string& root, int* error);
 // Production: requires advertised oneshot; never falls back to brightness-on.
 std::unique_ptr<Switch> discoverTimedRegulatorLed(const std::string& root, int* error);
-// C51C production path: requires stable driver-owned timeout ABI v1.
+// C51C enumerating variant: walks EVERY LED class entry, so it needs broad
+// sysfs_leds/other-LED access under SELinux. Diagnostics/tests only.
 std::unique_ptr<Switch> discoverDriverTimedRegulatorLed(const std::string& root, int* error);
+// C51D production path: opens one canonical platform device (O_PATH, no LED
+// enumeration), requires its driver binding to be regulator_vibrator, opens
+// leds/<label> without following a symlink, then requires timeout ABI v1.
+std::unique_ptr<Switch> openDriverTimedRegulatorLed(const std::string& device, const std::string& label,
+                                                    int* error);
 
 class Controller final {
   public:

@@ -1,4 +1,4 @@
-# MT6878 vibrator backend — C51C, deployment CLOSED
+# MT6878 vibrator backend — C51D, deployment CLOSED
 
 Owner: `LieppOS/android_hardware_mediatek_mt6878`. Continues C51B
 `1957904697f7eec67b42c3a46b9b86a5761da779`; native code remains independently
@@ -7,11 +7,15 @@ implementation, firmware, calibration or generated Binder header is imported.
 
 ## Current production contract
 
-`discoverDriverTimedRegulatorLed` identifies exactly one `regulator_vibrator` LED
-without guessing its DT label. The retained directory fd, bounded reads,
-max_brightness checks, attribute no-follow rules, complete-write checks and
-propagated discovery failures remain. It requires **driver-owned timeout ABI1**:
-`timeout_abi`, `max_duration_ms`, `duration_ms`.
+C51D: `openDriverTimedRegulatorLed(device, label)` opens one canonical platform
+device with O_PATH, requires its `driver` link to be `regulator_vibrator`, opens
+`leds/<label>` with O_NOFOLLOW and requires **driver-owned timeout ABI1**:
+`timeout_abi`, `max_duration_ms`, `duration_ms`. It never lists or opens other
+LEDs. The C51C enumerator `discoverDriverTimedRegulatorLed` opened EVERY LED in
+/sys/class/leds and failed closed on the first unreadable sibling, so under a
+narrow enforcing policy it could never start; it is kept for diagnostics/tests.
+Bounded reads, attribute no-follow rules, complete-write checks and propagated
+failures are unchanged.
 
 `DriverTimed.cpp` sends one atomic decimal duration request or zero for OFF. It
 never selects a generic trigger or writes brightness=1. Missing/unknown ABI,
@@ -38,16 +42,17 @@ provenance mirror, not a second build root.
 
 ## Validation and remaining gates
 
-- HAL: original12 + expanded22 cases = **34/34** normal and ASan/UBSan;
-  expanded **22/22 TSan**. Existing 94 checks plus two kernel-policy guards: **96/96 Python checks**.
+- HAL: original12 + expanded24 cases = **36/36** normal and ASan/UBSan;
+  expanded **24/24 TSan** (C51D: +2 canonical-open cases). **100/100 Python checks**
+  (96 + four C51D integration-contract checks).
 - Actual kernel shared policy: **12/12** normal/ASan-UBSan/TSan plus four static
   ordering guards; host tests do not execute hrtimer/regulator kernel APIs.
 - Actual single-module Kbuild, modpost and linkage PASS with matching Android
   Clang17; configuration unchanged, 32 CRC imports match core, six common
   callback KCFI preambles match, no exports. No kernel Image or phone test.
-- Genuine frozen V2 AIDL signatures remain the selected Android contract;
-  full Soong link/registration validation is delegated to the active C54 owner,
-  whose shared outputs are not used concurrently by C51C.
+- Genuine frozen V2 AIDL signatures remain the selected Android contract; 6/6
+  ARM64 objects compile against real SDK37 headers. The full Soong link is
+  DEFERRED: C55 owns the active shared platform build (see board README).
 
 System UID/domain need only metadata reads and stable duration_ms write, not
 trigger/invert/delay/shot access. Actual node labels/ownership, physical duration
