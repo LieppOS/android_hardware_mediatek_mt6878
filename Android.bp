@@ -16,7 +16,7 @@ license {
 cc_library_static {
     name: "libmtk_regulator_vibrator",
     vendor: true,
-    srcs: ["vibrator/Controller.cpp", "vibrator/LedSwitch.cpp", "vibrator/OneShot.cpp"],
+    srcs: ["vibrator/Controller.cpp", "vibrator/LedSwitch.cpp", "vibrator/OneShot.cpp", "vibrator/DriverTimed.cpp"],
     export_include_dirs: ["vibrator/include"],
     cpp_std: "c++17",
     cflags: ["-Wall", "-Wextra", "-Werror"],

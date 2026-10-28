@@ -5,6 +5,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -21,6 +22,7 @@ class Switch {
     // Legacy bool switches are retained for diagnostics/tests, not production.
     virtual int start(int timeoutMs) { (void)timeoutMs; return set(true); }
     virtual bool usesKernelTimerProtocol() const { return false; }
+    virtual int maxDurationMs() const { return std::numeric_limits<int>::max(); }
 };
 
 // Internal attribute transport; injectable for explicitly mocked protocol tests.
@@ -32,12 +34,15 @@ class LedAttributes {
     virtual int write(const char* name, const std::string& value) = 0;
 };
 std::unique_ptr<Switch> makeOneShotSwitch(std::unique_ptr<LedAttributes> attributes, int* error);
+std::unique_ptr<Switch> makeDriverTimedSwitch(std::unique_ptr<LedAttributes> attributes, int* error);
 
 // Uses the real Linux LED class ABI. Never guesses the DT-provided LED name.
 // root is fixed by the board service; the argument allows isolated host tests.
 std::unique_ptr<Switch> discoverRegulatorLed(const std::string& root, int* error);
 // Production: requires advertised oneshot; never falls back to brightness-on.
 std::unique_ptr<Switch> discoverTimedRegulatorLed(const std::string& root, int* error);
+// C51C production path: requires stable driver-owned timeout ABI v1.
+std::unique_ptr<Switch> discoverDriverTimedRegulatorLed(const std::string& root, int* error);
 
 class Controller final {
   public:
@@ -49,6 +54,7 @@ class Controller final {
 
     int on(int timeoutMs);
     int off();
+    int maxDurationMs() const;
 
   private:
     void run();

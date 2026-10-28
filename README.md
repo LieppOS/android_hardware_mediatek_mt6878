@@ -1,78 +1,59 @@
-# MT6878 Android hardware source — C51B
+# MT6878 vibrator backend — C51C, deployment CLOSED
 
-Canonical owner: `LieppOS/android_hardware_mediatek_mt6878`. Continues C51
-`d8a26a85b00a5db382185150b2be148d8bade307`, not another HAL service or source copy.
-Native code is **INDEPENDENT**, LieppOS Contributors, Apache-2.0 (`LICENSE`).
-No proprietary userspace library, firmware or calibration payload was imported.
+Owner: `LieppOS/android_hardware_mediatek_mt6878`. Continues C51B
+`1957904697f7eec67b42c3a46b9b86a5761da779`; native code remains independently
+authored Apache-2.0, LieppOS Contributors (`LICENSE`). No proprietary userspace
+implementation, firmware, calibration or generated Binder header is imported.
 
-## Two deliberately distinct paths
+## Current production contract
 
-- `discoverRegulatorLed`: original boolean brightness backend, retained for
-  diagnostics/regression tests only. A userspace timer cannot survive process
-  death. **Not used by the production entrypoint.**
-- `discoverTimedRegulatorLed`: exact same driver-identity discovery plus a required
-  Linux LED `oneshot` trigger. It **never falls back** to indefinite brightness-on.
-  Source: `vibrator/OneShot.cpp`; complete lower-layer evidence/failure model and
-  kernel-owner proposal: [`vibrator/SAFETY.md`](vibrator/SAFETY.md).
+`discoverDriverTimedRegulatorLed` identifies exactly one `regulator_vibrator` LED
+without guessing its DT label. The retained directory fd, bounded reads,
+max_brightness checks, attribute no-follow rules, complete-write checks and
+propagated discovery failures remain. It requires **driver-owned timeout ABI1**:
+`timeout_abi`, `max_duration_ms`, `duration_ms`.
 
-Driver `regulator_vibrator` is verified in the authorized kernel source
-`drivers/leds/regulator-vibrator.c` (SHA-256
-`d6cec1e2d6a04d1fd31f8a128ec365999ac1382539395b53d9873a4c85a5ff44`).
-LED label comes from DT. Discovery accepts exactly one matching device, verifies
-numeric max_brightness, pins its directory fd, permits normal kernel class links,
-and refuses attribute symlinks/nonregular nodes. Unexpected discovery read/open
-errors are propagated rather than hiding an unreadable second candidate.
-No label, voltage, calibration path, ioctl or PMIC watchdog is guessed.
+`DriverTimed.cpp` sends one atomic decimal duration request or zero for OFF. It
+never selects a generic trigger or writes brightness=1. Missing/unknown ABI,
+malformed metadata, inaccessible/disappeared attributes and failed/partial writes
+fail explicitly. Kernel-reported maximum propagates through Controller and Binder
+validation; oversized requests produce illegal-argument without hardware I/O.
+The kernel's current 5000ms ceiling is provisional software policy, not a thermal
+rating. Whole hardware safety is not claimed.
 
-The timed protocol serializes: brightness=0 (cancel old trigger), trigger=oneshot,
-verify `[oneshot]`, invert=0, delay_on=requested milliseconds, delay_off=1,
-shot=1 **last**. delay_off=0 would mean indefinite ON in this kernel and is never
-used. Repeated requests cancel before rearming; a pending kernel shot otherwise
-ignores replacement. Accepted shot expiry is kernel-owned, conditional on the
-verified running kernel/trigger and functioning scheduler/workqueue/regulator.
-Success means a complete attribute transaction was accepted, not motion feedback.
+The kernel owns expiry; no early competing user deadline is armed. Controller
+fault latching, immediate cleanup after failed activation/OFF, bounded retry,
+thread serialization, null-init handling and destructor stop remain. These are
+best-effort lifecycle handling, not the process-death protection itself.
 
-## Corrections and safety limits
+Legacy `discoverRegulatorLed` boolean and generic `discoverTimedRegulatorLed`
+one-shot paths remain regression/diagnostic code only. **Neither is a fallback
+from production.** The old oneshot-config-proposal.patch is marked superseded;
+CONFIG_LEDS_TRIGGER_ONESHOT stays disabled in the actual unchanged C50 config.
 
-Controller requests are mutex-serialized. Nonpositive duration is EINVAL; the
-positive signed-32-bit API range is finite (max 2147483647 ms), **not a claimed
-safe physical continuous-vibration limit**. Failed activation arms an immediate
-OFF instead of retaining a distant deadline. Failed OFF without a prior deadline
-now arms retry. Any I/O failure latches re-enable until an explicit successful OFF;
-timer cleanup success alone does not acknowledge/release the fault. Retries are
-250 ms apart; null partial initialization returns ENODEV. Shutdown joins its worker
-and attempts OFF. These are best-effort behaviors, not SIGKILL safety.
+Kernel source/ABI evidence and complete limits: [`vibrator/SAFETY.md`](vibrator/SAFETY.md).
+Canonical implementation: kernel `af3ecd85d28614c2ad25c6448cd68634d62c6a33`;
+module/private header synchronized canonical-first into the authorized Ulefone
+provenance mirror, not a second build root.
 
-A successful kernel shot has no competing normal userspace deadline: kernel
-activation starts on a later tick, so an earlier user timer could shorten the
-pulse. The legacy diagnostic path retains its original user deadline.
+## Validation and remaining gates
 
-**Deployment CLOSED:** inspected GKI defconfig does not select ONESHOT; loaded
-trigger/config, actual node labels/permissions and physical behavior are unknown.
-The review-only `vibrator/oneshot-config-proposal.patch` selects existing kernel
-code, not a new driver ABI; fixture-only dry-run passes. Kernel owner must also
-resolve/review driver workqueue probe unwind, remove/unbind, notifier, suspend and
-shutdown lifetime races described in SAFETY.md. No kernel worktree was changed.
+- HAL: original12 + expanded22 cases = **34/34** normal and ASan/UBSan;
+  expanded **22/22 TSan**. Existing 94 checks plus two kernel-policy guards: **96/96 Python checks**.
+- Actual kernel shared policy: **12/12** normal/ASan-UBSan/TSan plus four static
+  ordering guards; host tests do not execute hrtimer/regulator kernel APIs.
+- Actual single-module Kbuild, modpost and linkage PASS with matching Android
+  Clang17; configuration unchanged, 32 CRC imports match core, six common
+  callback KCFI preambles match, no exports. No kernel Image or phone test.
+- Genuine frozen V2 AIDL signatures remain the selected Android contract;
+  full Soong link/registration validation is delegated to the active C54 owner,
+  whose shared outputs are not used concurrently by C51C.
 
-## Tests and build evidence
-
-- Original `vibrator/tests/ControllerTest.cpp`: **12/12** normally and ASan/UBSan.
-  Existing error expectations remain; explicit caller fault injection is now
-  deterministic against the new immediate safety worker.
-- Board-owned `hardware/ulefone/gq5012bf1/vibrator/tests/LifecycleTest.cpp`:
-  **17/17** normally, ASan/UBSan and TSan. Uses the actual controller/request
-  policy with clearly fake sysfs attributes, including concurrency, every timed
-  transaction failure, cancellation, fault recovery, partial initialization and
-  SIGTERM/SIGKILL/SIGABRT child-process simulations of the **legacy limitation**.
-- Existing audit runner: **94/94 Python checks**, original 90 preserved.
-- Genuine platform SDK37 aidl generated frozen V2 headers; Android Clang22/Bionic
-  compiled all five backend/adapter/main sources to **arm64 objects** with vendor
-  and VNDK macros, no exceptions/RTTI, C++17 and Werror. **Not linked or Soong-built.**
-- Targeted Soong invocation reached bootstrap but failed on missing
-  `build/soong/config/main.star`; DeepSeek C53 owns recovery. No shared output was
-  reused or platform source modified. Compiler/test outputs are removed from the
-  audit runner's existing ignored `.tmp/`.
-
-Native tests never access real `/sys`; mocks do not prove kernel or hardware
-expiry. Whole kernel/PMIC/firmware support and physical safety are not certified
-open or functional by this userspace source claim. No push or phone operation.
+System UID/domain need only metadata reads and stable duration_ms write, not
+trigger/invert/delay/shot access. Actual node labels/ownership, physical duration
+rating, regulator fault behavior, kernel installation, the stock Manager contract
+and assembled Android compatibility still require owner validation. Do not flip
+code/init gates or select the source service. No root/DAC/SELinux shortcut, new
+repository, push, flash or phone operation. Exact owner instructions are in the
+board README and existing tooling research handoff (C54 research remains owned
+by DeepSeek).

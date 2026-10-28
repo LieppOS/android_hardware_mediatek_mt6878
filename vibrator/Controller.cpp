@@ -22,8 +22,12 @@ Controller::~Controller() {
     if (error && onAsyncError_) onAsyncError_(error);
 }
 
+int Controller::maxDurationMs() const {
+    return device_ ? device_->maxDurationMs() : 0;
+}
+
 int Controller::on(int timeoutMs) {
-    if (timeoutMs <= 0) return EINVAL;
+    if (timeoutMs <= 0 || (device_ && timeoutMs > maxDurationMs())) return EINVAL;
     std::lock_guard lock(mutex_);
     if (!device_) return ENODEV;
     if (fault_) return fault_;

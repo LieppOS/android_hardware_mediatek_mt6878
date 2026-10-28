@@ -147,4 +147,10 @@ std::unique_ptr<Switch> discoverTimedRegulatorLed(const std::string& root, int* 
     if (!attributes) return nullptr;
     return makeOneShotSwitch(std::move(attributes), error);
 }
+
+std::unique_ptr<Switch> discoverDriverTimedRegulatorLed(const std::string& root, int* error) {
+    auto attributes = discoverDevice(root, error);
+    if (!attributes) return nullptr;
+    return makeDriverTimedSwitch(std::move(attributes), error);
+}
 }  // namespace lieppos::vibrator

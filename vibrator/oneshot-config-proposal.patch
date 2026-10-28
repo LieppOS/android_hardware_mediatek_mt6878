@@ -1,4 +1,9 @@
-Subject: [PROPOSAL ONLY] Enable existing kernel LED one-shot expiry for vibrator
+Subject: [SUPERSEDED C51B PROPOSAL — DO NOT APPLY] Generic LED one-shot
+
+C51C selects driver-owned timeout ABI v1. The real C48/C50 build uses
+configs/c44-reference.config, not the gki_defconfig patched below. Kept only as
+historical evidence and a dry-run regression fixture; this is not deployment
+configuration or the selected kernel solution.
 
 NOT APPLIED. Kernel owner must review the effective product config, KMI/module
 policy and bound-driver lifecycle before accepting. This enables existing GPL-2.0
